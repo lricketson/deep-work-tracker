@@ -1,3 +1,7 @@
+# Technical Installation Instructions
+
+### If you're unfamiliar with GitHub/the terminal, go to the instructions in `README_non_technical.md`
+
 This script is a program to track how much work you're doing.
 
 # Deep Work Tracker ⏱️

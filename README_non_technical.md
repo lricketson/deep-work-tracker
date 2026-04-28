@@ -1,4 +1,4 @@
-## 🧭 Super Simple Setup (For Non-Tech People)
+## Non-Technical Installation Instructions
 
 If you aren't super familiar with computers, don't worry. You can still use this. Just follow these exact steps:
 
