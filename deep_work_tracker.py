@@ -98,6 +98,9 @@ class DeepWorkTracker:
         )
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
 
+        # ADD THIS LINE: Minimizes the window to the taskbar
+        self.root.iconify()
+
     def toggle_pause(self):
         if not self.is_paused:
             # Action: Pause the timer
