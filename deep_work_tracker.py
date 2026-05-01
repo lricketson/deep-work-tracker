@@ -2,33 +2,42 @@ import tkinter as tk
 import time
 import csv
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Automatically find the directory where this script is saved
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Force the CSV to be saved in that exact directory
+
+# Force the CSVs to be saved in that exact directory
 LOG_FILE = os.path.join(SCRIPT_DIR, "deep_work_log.csv")
+HOURLY_LOG_FILE = os.path.join(SCRIPT_DIR, "deep_work_hourly.csv")
 
 
 class DeepWorkTracker:
     def __init__(self, root):
         self.root = root
         self.root.title("Deep Work Tracker")
-        self.root.geometry("300x180")  # Made slightly taller to fit the new buttons
+        self.root.geometry("300x180")
         self.root.attributes("-topmost", True)
 
-        # Initialize the CSV if it doesn't exist
+        # Initialize the Daily CSV if it doesn't exist
         if not os.path.exists(LOG_FILE):
             with open(LOG_FILE, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Date", "Elapsed_Minutes"])
 
+        # Initialize the Hourly CSV if it doesn't exist
+        if not os.path.exists(HOURLY_LOG_FILE):
+            with open(HOURLY_LOG_FILE, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Date", "Hour", "Elapsed_Minutes"])
+
         # Time tracking variables
-        self.start_time = None
         self.is_working = False
         self.is_paused = False
-        self.pause_start_time = None
-        self.total_paused_time = 0.0
+        self.current_session_start = None
+        self.work_intervals = (
+            []
+        )  # Stores chunks of work as (start_timestamp, end_timestamp)
 
         # Initial UI Setup
         self.label = tk.Label(
@@ -61,18 +70,15 @@ class DeepWorkTracker:
         )
         self.leisure_btn.pack(side=tk.RIGHT, padx=10)
 
-        # Ensure closing the window logs the time properly
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def start_work(self):
-        self.start_time = time.time()
         self.is_working = True
+        self.current_session_start = time.time()
 
-        # Update UI to the active session state
         self.label.config(text="Deep work session active.\nClose window to stop & log.")
         self.btn_frame.pack_forget()
 
-        # New frame for active session buttons
         self.active_btn_frame = tk.Frame(self.root)
         self.active_btn_frame.pack(pady=10)
 
@@ -98,62 +104,130 @@ class DeepWorkTracker:
         )
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
 
-        # ADD THIS LINE: Minimizes the window to the taskbar
         self.root.iconify()
 
     def toggle_pause(self):
         if not self.is_paused:
-            # Action: Pause the timer
+            if self.current_session_start:
+                self.work_intervals.append((self.current_session_start, time.time()))
+
             self.is_paused = True
-            self.pause_start_time = time.time()
-            self.pause_btn.config(
-                text="Resume", bg="#2196F3"
-            )  # Change to a blue resume button
+            self.current_session_start = None
+            self.pause_btn.config(text="Resume", bg="#2196F3")
             self.label.config(text="Session paused.\nGo take a break.")
         else:
-            # Action: Resume the timer
+            self.current_session_start = time.time()
             self.is_paused = False
-            self.total_paused_time += time.time() - self.pause_start_time
-            self.pause_btn.config(
-                text="Pause", bg="#FF9800"
-            )  # Revert to orange pause button
+            self.pause_btn.config(text="Pause", bg="#FF9800")
             self.label.config(
                 text="Deep work session active.\nClose window to stop & log."
             )
 
     def log_time(self):
-        if self.is_working and self.start_time:
-            # If the app is closed while currently paused, finalize the pause math
-            if self.is_paused:
-                self.total_paused_time += time.time() - self.pause_start_time
+        if self.is_working:
+            if not self.is_paused and self.current_session_start:
+                self.work_intervals.append((self.current_session_start, time.time()))
 
-            # Calculate pure work time
-            elapsed_seconds = time.time() - self.start_time - self.total_paused_time
+            if not self.work_intervals:
+                return
 
-            # Failsafe: only log if time is positive (prevents weird bugs logging 0 or negative time)
-            if elapsed_seconds > 0:
-                elapsed_minutes = round(elapsed_seconds / 60, 2)
-                today = datetime.now().strftime("%Y-%m-%d")
+            # --- PROCESS DAILY LOG ---
+            daily_log_data = {}
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, "r") as f:
+                    reader = csv.reader(f)
+                    next(reader, None)
+                    for row in reader:
+                        if row:
+                            # Safety check: Handle both the old 2-column and new 3-column formats seamlessly
+                            if len(row) == 2:
+                                daily_log_data[row[0]] = float(row[1])
+                            elif len(row) == 3:
+                                daily_log_data[row[0]] = float(row[2])
 
-                # Read existing data
-                log_data = {}
-                if os.path.exists(LOG_FILE):
-                    with open(LOG_FILE, "r") as f:
-                        reader = csv.reader(f)
-                        next(reader, None)  # Skip header
-                        for row in reader:
-                            if row:
-                                log_data[row[0]] = float(row[1])
+            # --- PROCESS HOURLY LOG ---
+            hourly_log_data = {}
+            if os.path.exists(HOURLY_LOG_FILE):
+                with open(HOURLY_LOG_FILE, "r") as f:
+                    reader = csv.reader(f)
+                    next(reader, None)
+                    for row in reader:
+                        if len(row) == 3:
+                            d, h, m = row[0], row[1], float(row[2])
+                            if d not in hourly_log_data:
+                                hourly_log_data[d] = {}
+                            hourly_log_data[d][h] = m
 
-                # Add current session to today's cumulative total
-                log_data[today] = log_data.get(today, 0.0) + elapsed_minutes
+            # Slice and dice the intervals for both files
+            for start_ts, end_ts in self.work_intervals:
+                self._process_daily_interval(start_ts, end_ts, daily_log_data)
+                self._process_hourly_interval(start_ts, end_ts, hourly_log_data)
 
-                # Write back to CSV
-                with open(LOG_FILE, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["Date", "Elapsed_Minutes"])
-                    for date_key, mins in log_data.items():
-                        writer.writerow([date_key, round(mins, 2)])
+            # --- WRITE BACK DAILY LOG (Now with Day of the Week) ---
+            with open(LOG_FILE, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Date", "Day_of_Week", "Elapsed_Minutes"])
+                for date_key in sorted(daily_log_data.keys()):
+                    # Automatically figure out the day of the week from the date
+                    day_name = datetime.strptime(date_key, "%Y-%m-%d").strftime("%A")
+                    writer.writerow(
+                        [date_key, day_name, round(daily_log_data[date_key], 2)]
+                    )
+
+            # --- WRITE BACK HOURLY LOG ---
+            with open(HOURLY_LOG_FILE, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Date", "Hour", "Elapsed_Minutes"])
+                for d in sorted(hourly_log_data.keys()):
+                    for h in sorted(hourly_log_data[d].keys()):
+                        writer.writerow([d, h, round(hourly_log_data[d][h], 2)])
+
+    def _process_daily_interval(self, start_ts, end_ts, log_data):
+        """Slices a time interval into days if it crosses midnight."""
+        current_start = start_ts
+        while current_start < end_ts:
+            dt_start = datetime.fromtimestamp(current_start)
+            next_midnight = datetime(
+                dt_start.year, dt_start.month, dt_start.day
+            ) + timedelta(days=1)
+
+            chunk_end_ts = min(end_ts, next_midnight.timestamp())
+            elapsed_minutes = (chunk_end_ts - current_start) / 60.0
+
+            if elapsed_minutes > 0:
+                date_str = dt_start.strftime("%Y-%m-%d")
+                log_data[date_str] = log_data.get(date_str, 0.0) + elapsed_minutes
+
+            current_start = chunk_end_ts
+
+    def _process_hourly_interval(self, start_ts, end_ts, hourly_log_data):
+        """Slices a time interval precisely by the hour."""
+        current_start = start_ts
+        while current_start < end_ts:
+            dt_start = datetime.fromtimestamp(current_start)
+
+            # Find the exact timestamp of the top of the next hour
+            next_hour = (dt_start + timedelta(hours=1)).replace(
+                minute=0, second=0, microsecond=0
+            )
+
+            chunk_end_ts = min(end_ts, next_hour.timestamp())
+            elapsed_minutes = (chunk_end_ts - current_start) / 60.0
+
+            if elapsed_minutes > 0:
+                date_str = dt_start.strftime("%Y-%m-%d")
+                hour_str = dt_start.strftime(
+                    "%H:00"
+                )  # Formats as "09:00", "14:00", etc.
+
+                if date_str not in hourly_log_data:
+                    hourly_log_data[date_str] = {}
+
+                hourly_log_data[date_str][hour_str] = (
+                    hourly_log_data[date_str].get(hour_str, 0.0) + elapsed_minutes
+                )
+
+            current_start = chunk_end_ts
 
     def log_and_exit(self):
         self.log_time()
